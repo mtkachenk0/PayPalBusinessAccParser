@@ -1,0 +1,2 @@
+selenium-webdriver:3.2.1
+watir-webdriver:0.9.9
