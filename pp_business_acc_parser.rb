@@ -32,110 +32,103 @@ class PayPalDriver
   def initialize(browser = :chrome, start_url = 'https://google.com')
     @driver = Watir::Browser.start(start_url, browser)
     @driver.driver.manage.timeouts.implicit_wait = 5
-    @is_logged_in = false
-    @credentials = Hash.new(nil)
-    @account_data = Hash.new(nil)
   end
 
   protected
 
   def get_credentials
+    credentials = Hash.new(nil)
+    # In python I'd use generator function for this case
     puts 'Please provide your login: '
-    @credentials[:login] = gets.chomp
+    credentials[:login] = gets.chomp
     puts 'Please provide your password: '
-    @credentials[:password] = gets.chomp
-    @credentials
-  end
-
-  def login
-    @driver.goto('https://www.paypal.com/signin')
-    @credentials = get_credentials if @credentials.values.empty?
-    @driver.text_field(name: 'login_email').set(@credentials[:login])
-    @driver.text_field(name: 'login_password').set(@credentials[:password])
-    @driver.send_keys(:enter)
-    begin
-      Watir::Wait.until(10) { @driver.title.start_with?('Log') }
-    rescue Watir::Wait::TimeoutError => ex
-      puts ex.to_s
-    ensure
-      @is_logged_in = logged_in?
-    end
+    credentials[:password] = gets.chomp
+    credentials
   end
 
   def logged_in?
     !@driver.text_field(name: 'login_email').exists?
   end
 
-  def go2summary
-    begin
-      @driver.element(xpath: '//*[@id="mer-header"]/div/div/a[2]').when_present(5).click
-      puts "Clicked to Summary \n"
-    rescue Watir::Exception => ex
-      puts "Unexpected exception: #{ex}"
-    ensure
-      @driver.title.start_with?('Summary')
+  def login
+    @driver.goto('https://www.paypal.com/signin')
+    @credentials = get_credentials
+    @driver.text_field(name: 'login_email').set(@credentials[:login])
+    @driver.text_field(name: 'login_password').set(@credentials[:password])
+    @driver.send_keys(:enter)
+    Watir::Wait.until(15) { @driver.title.start_with?('Summary') }
     end
+
+  def go2summary
+    return true if @driver.title.start_with?('Summary')
+    summary_button = @driver.element(xpath: '//*[@id="mer-header"]/div/div/a[2]')
+    until summary_button.exists? do sleep 1 end
+    summary_button.when_present(10).click
+    puts "Gone to Summary \n"
+    page_changed = @driver.title.start_with?('Summary')
+    Watir::Wait.until(10) { page_changed }
+    page_changed
   end
 
   def go2profile_options
-    return true if @driver.title.eql?('My Profile - PayPal')
-
+    return true if @driver.title.start_with?('My Profile')
     profile_button = @driver.div(class: 'mer-settings-wrapper')
     until profile_button.exists? do sleep 1 end
-
-    begin
-      profile_button.when_present(10).click
-      puts 'Clicked'
-    rescue Watir::Exception::UnknownObjectException => ex
-      $stderr.print "Caught exception. #{ex}"
-    else
-      return @driver.title.eql?('My Profile - PayPal')
-    end
+    profile_button.when_present(10).click
+    puts "Gone to Profile Options\n"
+    page_changed = @driver.title.start_with?('My Profile')
+    Watir::Wait.until(10) { page_changed }
+    page_changed
   end
 
-  def get_money_related_data
+  def update_with_money_data(account_data)
     begin
       @driver.element(id: 'mymoney').click
     rescue Watir::Exception => ex
-      puts "All right, most probably button is already pressed,\n #{ex}"
+      # Everything is ok, most probably button is already pressed
+      puts ex
     end
     card_data = @driver.element(xpath: '//*[@id="creditCards"]/div[2]').text.split
     # do not use parallel assignment !
-    @account_data[:card_number] = card_data[0].to_s
-    @account_data[:expires_at] = card_data[-1].to_s[0..-2]
-    @account_data[:balance], @account_data[:currency] = pp_money_splitter(
+    account_data[:card_number] = card_data[0].to_s
+    account_data[:expires_at] = card_data[-1].to_s[0..-2]
+    # parallel assignment again, but it's useful
+    # 'cause pp_money_splitter returns 2 values
+    account_data[:balance], account_data[:currency] = pp_money_splitter(
         @driver.element(xpath: '//*[@id="PPBalance"]/div[2]').text
     )
-    #balance_data[0].to_s[1..-1], balance_data[-1].to_s
-    @account_data
+    account_data
   end
 
-  def get_base_account_data
+  def update_with_account_data(account_data)
     begin
       @driver.element(id: 'mybizinfo').click
     rescue Watir::Exception => ex
-      puts "All right, most probably button is already pressed,\n #{ex}"
-    ensure
-      { account_name: '//*[@id="name"]/div[2]',
-        email: '//*[@id="Emails"]/li',
-        phone: '//*[@id="Phones"]/li[1]/span[1]',
-        merchant_id: '//*[@id="merchantId"]/div[2]' }.each_pair do |name, xpath|
-        begin
-          @account_data[name] = @driver.element(xpath: xpath).text
-        rescue Watir::Exception::UnknownObjectException => ex
-          puts "Cannot get data for #{name} due to #{ex}"
-        end
-      end
-      if @account_data.key?(:email)
-        # it's stored like <some_email> Primary
-        @account_data[:email] = @account_data[:email].split[0]
+      # Everything is ok, most probably button is already pressed
+      puts ex
+    xpath_map = {
+          account_name: '//*[@id="name"]/div[2]',
+          email: '//*[@id="Emails"]/li',
+          phone: '//*[@id="Phones"]/li[1]/span[1]',
+          merchant_id: '//*[@id="merchantId"]/div[2]'
+      }
+    fails = 0
+    xpath_map.each_pair do |name, xpath|
+      begin
+        account_data[name] = @driver.element(xpath: xpath).text
+      rescue Watir::Exception::UnknownObjectException => ex
+        fails += 1
+        puts "Cannot get data for #{name} due to #{ex}"
       end
     end
-    @account_data
+    account_data[:email] = account_data[:email].split[0] if account_data.key?(:email)
+    raise RuntimeError('Smth went wrong') if fails.eql?(xpath_map.keys.length)
+    end
+    account_data
   end
 
-  def get_transactions_data
-    @account_data[:transactions] = []
+  def update_with_transactions_data(account_data)
+    account_data[:transactions] = []
 
     begin
       @driver.element(xpath: '//*[@id="activity-tile"]/div[3]/div/a').when_present(5).click
@@ -157,14 +150,15 @@ class PayPalDriver
     transactions.each do |raw|
       if raw.attribute_value(:class).start_with?('activity-row primaryTxn')
         money, currency = pp_money_splitter(raw.element(class: 'price').text)
-        puts money, currency
-        @account_data[:transactions].push(PayPalTransaction.new(
-            raw.element(class: 'date-time').text,
-            money,
-            currency,
-            raw.element(class: 'transactionStatus').text,
-            raw.element(class: 'type').text << ' ' << raw.element(class: 'desc').text
-        ).to_hash)
+        account_data[:transactions].push(
+            PayPalTransaction.new(
+                raw.element(class: 'date-time').text,
+                money,
+                currency,
+                raw.element(class: 'transactionStatus').text,
+                raw.element(class: 'type').text << ' ' << raw.element(class: 'desc').text
+            ).to_hash
+        )
       end
     end
   end
@@ -172,6 +166,7 @@ class PayPalDriver
   public
 
   def pp_money_splitter(balance)
+    puts balance
     # money text should be presented as $<amount> <currency>
     balance = balance.split
     money = if balance[0][0].to_s.i?
@@ -181,11 +176,10 @@ class PayPalDriver
             else
               balance[0].to_s[1..-1]
             end
-    return money.tr!(',', '.'), balance[-1].to_s # use tr! instead of gsub!
-  end
+    # rubocop said me not to use return, but how to
+    # return 2 values at once?
 
-  def to_json
-    JSON.generate(accounts: [@account_data])
+    return money.gsub!(',', '.'), balance[-1].to_s
   end
 
   # {
@@ -209,21 +203,23 @@ class PayPalDriver
   #    }]
   #  }]
   # }
-  def get_account_info
+  def summarise_account_data
     # 3 attempts to login, (sometimes it doesn't work)
     [0..3].each do
       print 'Trying to login'
       login && break # means <break if login>
     end
+    account_data = Hash(nil)
     go2profile_options
-    get_base_account_data
-    get_money_related_data
+    update_with_account_data(account_data)
+    update_with_money_data(account_data)
     go2summary
-    get_transactions_data
-    to_json
+    update_with_transactions_data(account_data)
+
+    JSON.generate(accounts: [account_data])
   end
 end
 
 driver = PayPalDriver.new
-puts driver.get_account_info
+puts driver.summarise_account_data
 gets.chomp
