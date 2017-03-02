@@ -1,0 +1,9 @@
+# ruby
+ruby
+
+# nokogiri dependencies
+build-essential
+patch
+ruby-dev
+zlib1g-dev
+liblzma-dev
